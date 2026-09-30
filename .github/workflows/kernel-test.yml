@@ -35,7 +35,7 @@ jobs:
       - name: Clone Kernel Source
         run: |
           rm -rf kernel
-          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }}${{ env.KERNEL_SOURCE }} kernel
+          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_SOURCE }} kernel
 
       - name: Cache AOSP Clang Toolchain
         id: cache-clang
@@ -98,15 +98,13 @@ jobs:
 
           echo "=== Generating Defconfig ==="
           make O=out ARCH=arm64 ${{ env.DEFCONFIG_NAME }} \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
+            LLVM=1 \
+            LLVM_IAS=1 2>&1 | tee build.log
 
           echo "=== Starting Kernel Compilation ==="
           make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee -a build.log
+            LLVM=1 \
+            LLVM_IAS=1 2>&1 | tee -a build.log
 
       - name: Upload Kernel Artifacts (Success)
         if: success()
