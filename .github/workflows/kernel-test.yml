@@ -44,15 +44,12 @@ jobs:
 
           URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/${{ env.CLANG_VERSION }}.tar.gz"
 
-          echo "=== Attempting primary download via curl tarball ==="
-          if curl -fLO --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 "$URL"; then
-            echo "Tarball download successful! Extracting..."
-            tar -xf "${{ env.CLANG_VERSION }}.tar.gz" -C clang
-            rm "${{ env.CLANG_VERSION }}.tar.gz"
+          echo "=== Streaming direct tarball extraction ==="
+          if curl -sSL --connect-timeout 15 "$URL" | tar -xz -C clang; then
+            echo "Direct stream download successful!"
           else
-            echo "Tarball download failed! Falling back to sparse git clone..."
-            rm -f "${{ env.CLANG_VERSION }}.tar.gz"
-            
+            echo "Stream failed! Falling back to sparse git clone..."
+            rm -rf clang/*
             git clone --depth=1 --filter=blob:none --sparse https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b main-kernel clang_repo
             cd clang_repo
             git sparse-checkout set ${{ env.CLANG_VERSION }}
@@ -60,6 +57,8 @@ jobs:
             cd ..
             rm -rf clang_repo
           fi
+
+          echo "$(pwd)/clang/bin" >> $GITHUB_PATH
 
       - name: Apply Custom Defconfig Overrides
         run: |
@@ -75,6 +74,29 @@ jobs:
           key: ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-
+            
+      - name: Compile Kernel
+        run: |
+          set -o pipefail
+
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/.cache/ccache
+          ccache -M 5G
+
+          cd kernel
+          mkdir -p out
+
+          echo "=== Generating Defconfig ==="
+          make O=out ARCH=arm64 ${{ env.DEFCONFIG_NAME }} \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
+
+          echo "=== Starting Kernel Compilation ==="
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee -a build.log
 
       - name: Compile Kernel
         run: |
