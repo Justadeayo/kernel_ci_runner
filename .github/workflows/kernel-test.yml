@@ -1,0 +1,139 @@
+name: Build & Test Kernel (violet)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      TELEGRAM_CHAT_ID:
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        required: false
+
+env:
+  TZ: "Africa/Lagos"
+  CLANG_VERSION: "clang-r596125"
+  KERNEL_SOURCE: "https://github.com/Justadeayo/android_kernel_xiaomi_violet"
+  KERNEL_BRANCH: "17"
+  DEFCONFIG_NAME: "vendor/violet-perf_defconfig"
+  DEVICE_CODENAME: "violet"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Runner Repo
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex make libssl-dev libelf-dev \
+            gcc g++ ccache git curl wget zip unzip python3
+
+      - name: Clone Kernel Source
+        run: |
+          rm -rf kernel
+          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }}${{ env.KERNEL_SOURCE }} kernel
+
+      - name: Download AOSP Clang Toolchain (${{ env.CLANG_VERSION }})
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
+          mkdir clang && tar -xf clang.tar.gz -C clang
+          rm clang.tar.gz
+
+      - name: Apply Custom Defconfig Overrides
+        run: |
+          if [ -f "configs/custom_defconfig" ]; then
+            echo "=== Merging Custom Overrides into Defconfig ==="
+            cat configs/custom_defconfig >> "kernel/arch/arm64/configs/${{ env.DEFCONFIG_NAME }}"
+          fi
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$(pwd)/toolchain/clang/bin:$PATH"
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/.cache/ccache
+          ccache -M 5G
+
+          cd kernel
+          mkdir -p out
+
+          # Generate Defconfig
+          make O=out ARCH=arm64 ${{ env.DEFCONFIG_NAME }} \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
+
+          # Build Kernel
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee -a build.log
+
+      - name: Upload Kernel Artifacts (Success)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ env.DEVICE_CODENAME }}-${{ github.run_number }}
+          path: |
+            kernel/out/arch/arm64/boot/Image*
+            kernel/out/arch/arm64/boot/dtbo.img
+            kernel/out/arch/arm64/boot/dts/**/*.dtb
+
+      - name: Upload Error Log (Failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log-${{ env.DEVICE_CODENAME }}
+          path: kernel/build.log
+
+      - name: Notify Telegram on Success
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d text="✅ Kernel build for ${{ env.DEVICE_CODENAME }} completed successfully with${{ env.CLANG_VERSION }}!"
+          else
+            echo "Telegram secrets not set, skipping notification."
+          fi
+
+      - name: Notify Telegram on Failure with Error Snippet
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+            cd kernel
+            ERROR_SNIPPET=$(grep -i -E "error:|fatal error:" build.log | tail -n 15 || tail -n 20 build.log)
+            
+            MESSAGE="❌ Kernel build for ${{ env.DEVICE_CODENAME }} failed!
+
+          *Last Error Snippet:*
+          \`\`\`
+          ${ERROR_SNIPPET}
+          \`\`\`"
+
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHAT_ID}" \
+              -d parse_mode="Markdown" \
+              -d text="$MESSAGE"
+          else
+            echo "Telegram secrets not set, skipping failure notification."
+          fi
