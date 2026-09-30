@@ -35,15 +35,31 @@ jobs:
       - name: Clone Kernel Source
         run: |
           rm -rf kernel
-          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }}${{ env.KERNEL_SOURCE }} kernel
+          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_SOURCE }} kernel
 
       - name: Download AOSP Clang Toolchain (${{ env.CLANG_VERSION }})
         run: |
-          mkdir -p toolchain
+          mkdir -p toolchain/clang
           cd toolchain
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
-          mkdir clang && tar -xf clang.tar.gz -C clang
-          rm clang.tar.gz
+
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/${{ env.CLANG_VERSION }}.tar.gz"
+
+          echo "=== Attempting primary download via curl tarball ==="
+          if curl -fLO --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 "$URL"; then
+            echo "Tarball download successful! Extracting..."
+            tar -xf "${{ env.CLANG_VERSION }}.tar.gz" -C clang
+            rm "${{ env.CLANG_VERSION }}.tar.gz"
+          else
+            echo "Tarball download failed! Falling back to sparse git clone..."
+            rm -f "${{ env.CLANG_VERSION }}.tar.gz"
+            
+            git clone --depth=1 --filter=blob:none --sparse https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b main-kernel clang_repo
+            cd clang_repo
+            git sparse-checkout set ${{ env.CLANG_VERSION }}
+            mv ${{ env.CLANG_VERSION }}/* ../clang/
+            cd ..
+            rm -rf clang_repo
+          fi
 
       - name: Apply Custom Defconfig Overrides
         run: |
