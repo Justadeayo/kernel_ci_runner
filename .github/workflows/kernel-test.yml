@@ -96,15 +96,21 @@ jobs:
           cd kernel
           mkdir -p out
 
+          MAKE_FLAGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            LLVM=1
+            LLVM_IAS=1
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+          )
+
           echo "=== Generating Defconfig ==="
-          make O=out ARCH=arm64 ${{ env.DEFCONFIG_NAME }} \
-            LLVM=1 \
-            LLVM_IAS=1 2>&1 | tee build.log
+          make "${MAKE_FLAGS[@]}" ${{ env.DEFCONFIG_NAME }} 2>&1 | tee build.log
 
           echo "=== Starting Kernel Compilation ==="
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 2>&1 | tee -a build.log
+          make -j$(nproc --all) "${MAKE_FLAGS[@]}" 2>&1 | tee -a build.log
 
       - name: Upload Kernel Artifacts (Success)
         if: success()
