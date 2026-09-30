@@ -35,16 +35,24 @@ jobs:
       - name: Clone Kernel Source
         run: |
           rm -rf kernel
-          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_SOURCE }} kernel
+          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }}${{ env.KERNEL_SOURCE }} kernel
+
+      - name: Cache AOSP Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang
+          key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
 
       - name: Download AOSP Clang Toolchain (${{ env.CLANG_VERSION }})
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain/clang
           cd toolchain
 
           URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/${{ env.CLANG_VERSION }}.tar.gz"
 
-          echo "=== Streaming direct tarball extraction ==="
+          echo "=== Direct stream download ==="
           if curl -sSL --connect-timeout 15 "$URL" | tar -xz -C clang; then
             echo "Direct stream download successful!"
           else
@@ -58,7 +66,9 @@ jobs:
             rm -rf clang_repo
           fi
 
-          echo "$(pwd)/clang/bin" >> $GITHUB_PATH
+      - name: Export Clang to PATH
+        run: |
+          echo "$(pwd)/toolchain/clang/bin" >> $GITHUB_PATH
 
       - name: Apply Custom Defconfig Overrides
         run: |
@@ -74,7 +84,7 @@ jobs:
           key: ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-kernel-${{ env.DEVICE_CODENAME }}-
-            
+
       - name: Compile Kernel
         run: |
           set -o pipefail
@@ -93,28 +103,6 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
 
           echo "=== Starting Kernel Compilation ==="
-          make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee -a build.log
-
-      - name: Compile Kernel
-        run: |
-          export PATH="$(pwd)/toolchain/clang/bin:$PATH"
-          export USE_CCACHE=1
-          export CCACHE_DIR=~/.cache/ccache
-          ccache -M 5G
-
-          cd kernel
-          mkdir -p out
-
-          # Generate Defconfig
-          make O=out ARCH=arm64 ${{ env.DEFCONFIG_NAME }} \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
-
-          # Build Kernel
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -158,8 +146,7 @@ jobs:
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
-            cd kernel
-            ERROR_SNIPPET=$(grep -i -E "error:|fatal error:" build.log | tail -n 15 || tail -n 20 build.log)
+            ERROR_SNIPPET=$(grep -i -E "error:|fatal error:" kernel/build.log | tail -n 15 || tail -n 20 kernel/build.log)
             
             MESSAGE="❌ Kernel build for ${{ env.DEVICE_CODENAME }} failed!
 
